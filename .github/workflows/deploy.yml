@@ -44,7 +44,7 @@ jobs:
       - run: npm run preflight:env
       - name: Validate migrator URL format
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATOR }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: npm run preflight:env
