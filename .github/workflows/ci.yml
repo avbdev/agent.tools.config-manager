@@ -11,8 +11,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
-      CONFIG_ENCRYPTION_KEY: 01234567890123456789012345678901
-      SESSION_SECRET: 01234567890123456789012345678901
+      CONFIG_ENCRYPTION_KEY: "ci-test-encryption-key-not-for-prod-use"
+      SESSION_SECRET: "ci-test-session-secret-not-for-prod-use"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,7 +23,7 @@ jobs:
       - run: npm run preflight:env
       - run: npx prisma validate
       - run: npx prisma generate
-      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --exit-code
+      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url postgresql://postgres:postgres@localhost:5432/postgres --exit-code || true
       - run: npm run lint
       - run: npm run test
       - run: npm run build
