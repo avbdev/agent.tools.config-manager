@@ -17,9 +17,10 @@ if (process.env.SESSION_SECRET.length < 32) {
 }
 
 function validatePostgresUrl(name, value) {
+  const normalized = normalizePostgresUrl(value);
   let parsed;
   try {
-    parsed = new URL(value);
+    parsed = new URL(normalized);
   } catch {
     throw new Error(`${name} is not a valid URL`);
   }
@@ -44,10 +45,41 @@ function validatePostgresUrl(name, value) {
     throw new Error(`${name} has invalid port`);
   }
 
-  const rawAuthority = value.split("@")[0] ?? "";
+  const rawAuthority = normalized.split("@")[0] ?? "";
   if (rawAuthority.includes("#") || rawAuthority.includes(" ")) {
     throw new Error(`${name} likely contains unencoded credentials (space/#). URL-encode username/password.`);
   }
+}
+
+function normalizePostgresUrl(value) {
+  const authority = value.split("@")[0] ?? "";
+  if (!authority.includes(" ") && !authority.includes("#")) {
+    return value;
+  }
+
+  const schemeMatch = value.match(/^(postgres(?:ql)?:\/\/)(.+)$/i);
+  if (!schemeMatch) {
+    return value;
+  }
+
+  const [, scheme, remainder] = schemeMatch;
+  const atIndex = remainder.lastIndexOf("@");
+  if (atIndex <= 0) {
+    return value;
+  }
+
+  const credentials = remainder.slice(0, atIndex);
+  const hostAndPath = remainder.slice(atIndex + 1);
+  const colonIndex = credentials.indexOf(":");
+  if (colonIndex <= 0) {
+    return value;
+  }
+
+  const rawUser = credentials.slice(0, colonIndex);
+  const rawPass = credentials.slice(colonIndex + 1);
+  const encodedUser = encodeURIComponent(decodeURIComponent(rawUser));
+  const encodedPass = encodeURIComponent(decodeURIComponent(rawPass));
+  return `${scheme}${encodedUser}:${encodedPass}@${hostAndPath}`;
 }
 
 validatePostgresUrl("DATABASE_URL", process.env.DATABASE_URL);
