@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { getEnv } from "@/lib/env";
 import type { Role, User } from "@prisma/client";
 
 const SESSION_COOKIE = "cm_session";
@@ -15,7 +16,12 @@ export async function verifyPassword(password: string, hash: string) {
 }
 
 export async function createSession(userId: string) {
-  const token = crypto.randomBytes(32).toString("hex");
+  const env = getEnv();
+  const nonce = crypto.randomBytes(32).toString("hex");
+  const token = crypto
+    .createHmac("sha256", env.SESSION_SECRET)
+    .update(`${userId}:${nonce}`)
+    .digest("hex");
   const expires = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
 
   await prisma.session.create({

@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "postinstall": "prisma generate",
+    "preflight:env": "node scripts/validate-env.mjs",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest"

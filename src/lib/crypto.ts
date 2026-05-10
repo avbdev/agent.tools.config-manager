@@ -1,13 +1,11 @@
 import crypto from "crypto";
+import { getEnv } from "@/lib/env";
 
 const ALGO = "aes-256-gcm";
 
 function keyBuffer() {
-  const key = process.env.CONFIG_ENCRYPTION_KEY;
-  if (!key || key.length < 32) {
-    throw new Error("CONFIG_ENCRYPTION_KEY must be set to at least 32 chars");
-  }
-  return crypto.createHash("sha256").update(key).digest();
+  const env = getEnv();
+  return crypto.createHash("sha256").update(env.CONFIG_ENCRYPTION_KEY).digest();
 }
 
 export function encryptSecret(plainText: string) {

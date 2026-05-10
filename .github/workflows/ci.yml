@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on:
   push:
@@ -6,8 +6,13 @@ on:
   pull_request:
 
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      CONFIG_ENCRYPTION_KEY: 01234567890123456789012345678901
+      SESSION_SECRET: 01234567890123456789012345678901
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,7 +20,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run preflight:env
+      - run: npx prisma validate
       - run: npx prisma generate
+      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --exit-code
       - run: npm run lint
       - run: npm run test
       - run: npm run build

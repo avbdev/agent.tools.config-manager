@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { canManageSecrets } from "@/lib/rbac";
 import { encryptSecret } from "@/lib/crypto";
 import { writeAudit } from "@/lib/audit";
+import { asErrorResponse } from "@/lib/http";
 
 const schema = z.object({
   service: z.string().min(1),
@@ -35,46 +36,50 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!canManageSecrets(user.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  try {
+    const user = await getCurrentUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!canManageSecrets(user.role)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
-  const contentType = req.headers.get("content-type") || "";
-  const body = contentType.includes("application/json")
-    ? await req.json()
-    : Object.fromEntries((await req.formData()).entries());
-  if (typeof body.isSecret === "string") {
-    body.isSecret = body.isSecret === "true";
-  }
-  const input = schema.parse(body);
-  const valueCipher = input.isSecret ? encryptSecret(input.value) : input.value;
+    const contentType = req.headers.get("content-type") || "";
+    const body = contentType.includes("application/json")
+      ? await req.json()
+      : Object.fromEntries((await req.formData()).entries());
+    if (typeof body.isSecret === "string") {
+      body.isSecret = body.isSecret === "true";
+    }
+    const input = schema.parse(body);
+    const valueCipher = input.isSecret ? encryptSecret(input.value) : input.value;
 
-  const setting = await prisma.setting.upsert({
-    where: {
-      ownerId_service_key: {
+    const setting = await prisma.setting.upsert({
+      where: {
+        ownerId_service_key: {
+          ownerId: user.id,
+          service: input.service,
+          key: input.key,
+        },
+      },
+      update: {
+        valueCipher,
+        isSecret: input.isSecret,
+      },
+      create: {
         ownerId: user.id,
         service: input.service,
         key: input.key,
+        valueCipher,
+        isSecret: input.isSecret,
       },
-    },
-    update: {
-      valueCipher,
-      isSecret: input.isSecret,
-    },
-    create: {
-      ownerId: user.id,
-      service: input.service,
-      key: input.key,
-      valueCipher,
-      isSecret: input.isSecret,
-    },
-  });
+    });
 
-  await writeAudit(user.id, "setting.upsert", `${input.service}.${input.key}`);
-  if (contentType.includes("application/json")) {
-    return NextResponse.json({ id: setting.id, ok: true });
+    await writeAudit(user.id, "setting.upsert", `${input.service}.${input.key}`);
+    if (contentType.includes("application/json")) {
+      return NextResponse.json({ id: setting.id, ok: true });
+    }
+    return NextResponse.redirect(new URL("/dashboard", req.url));
+  } catch (error) {
+    return asErrorResponse(error);
   }
-  return NextResponse.redirect(new URL("/dashboard", req.url));
 }

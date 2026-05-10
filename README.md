@@ -28,8 +28,9 @@ npm run dev
 Required environment variables:
 
 ```bash
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="postgresql://..."
 CONFIG_ENCRYPTION_KEY="replace-with-long-random-string-at-least-32-chars"
+SESSION_SECRET="replace-with-long-random-string-at-least-32-chars"
 ```
 
 ## API endpoints
@@ -41,11 +42,24 @@ CONFIG_ENCRYPTION_KEY="replace-with-long-random-string-at-least-32-chars"
 - `GET|PATCH /api/users` (admin)
 - `GET /api/audit` (admin)
 
-## Production deployment (Vercel)
+## Production deployment (Vercel + Neon)
 
-1. Import repo in Vercel.
-2. Set env vars:
-   - `DATABASE_URL` (recommended free Neon Postgres URL)
-   - `CONFIG_ENCRYPTION_KEY` (strong random key)
-3. Run a one-time migrate/push against prod DB.
-4. Deploy.
+1. Create Neon production project and store two credentials:
+   - `app_rw` role (runtime app access)
+   - `app_migrator` role (schema migrations only)
+2. Configure Vercel production environment variables:
+   - `DATABASE_URL` = `app_rw` connection string
+   - `CONFIG_ENCRYPTION_KEY` = 32+ char secret
+   - `SESSION_SECRET` = 32+ char secret
+3. Configure GitHub Actions repository secret:
+   - `DATABASE_URL_MIGRATOR` = `app_migrator` connection string
+4. Keep Vercel GitHub integration enabled for deployments (no long-lived Vercel token in Actions).
+5. Push to `main`; `production-migrate` runs `prisma migrate deploy` before/alongside Vercel production deploy.
+
+## Security hardening
+
+- Strict security headers (CSP, HSTS, frame deny, nosniff, permissions policy)
+- Zod request validation with explicit 400 responses
+- Rate limiting on auth endpoints
+- Encryption key and session secret are required env vars
+- Weekly dependency audit workflow (`security.yml`)

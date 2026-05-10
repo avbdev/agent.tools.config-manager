@@ -1,0 +1,92 @@
+name: deploy-production
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      DATABASE_URL_MIGRATOR: ${{ secrets.DATABASE_URL_MIGRATOR }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate required production secrets exist
+        run: |
+          for name in DATABASE_URL DATABASE_URL_MIGRATOR CONFIG_ENCRYPTION_KEY SESSION_SECRET VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name"
+              exit 1
+            fi
+          done
+      - run: npm run preflight:env
+      - name: Validate migrator URL format
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATOR }}
+          CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+        run: npm run preflight:env
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production
+    needs: [preflight]
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATOR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    needs: [migrate]
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+      - run: npx vercel build --prod --token "$VERCEL_TOKEN"
+      - run: npx vercel deploy --prebuilt --prod --token "$VERCEL_TOKEN"
