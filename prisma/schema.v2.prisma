@@ -1,0 +1,411 @@
+// ConfigVault — Prisma Schema v2.0
+// Migration from v1: multi-tenant hierarchy, config versioning, secrets audit, service tokens
+// Run: npx prisma migrate dev --name v2-hierarchy
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// IDENTITY & ACCESS
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  name         String?
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastSeenAt   DateTime?
+
+  // Relations
+  orgMemberships  OrgMember[]
+  invitations     Invitation[]     @relation("InvitedBy")
+  sessions        Session[]
+  accounts        Account[]
+  auditLogs       AuditLog[]
+  secretReveals   SecretRevealLog[]
+  configVersions  ConfigVersion[]  // author of each version
+
+  @@index([email])
+}
+
+// Per-org role assignment — replaces the global Role on User
+model OrgMember {
+  id        String    @id @default(cuid())
+  userId    String
+  orgId     String
+  role      OrgRole   @default(VIEWER)
+  joinedAt  DateTime  @default(now())
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model Invitation {
+  id          String           @id @default(cuid())
+  email       String
+  orgId       String
+  role        OrgRole          @default(VIEWER)
+  token       String           @unique  // random 32-byte hex
+  status      InvitationStatus @default(PENDING)
+  expiresAt   DateTime
+  createdAt   DateTime         @default(now())
+  invitedById String
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invitedBy User         @relation("InvitedBy", fields: [invitedById], references: [id])
+
+  @@index([orgId])
+  @@index([email])
+  @@index([token])
+}
+
+// ─────────────────────────────────────────────────────────────
+// RESOURCE HIERARCHY: Org → Project → Environment
+// ─────────────────────────────────────────────────────────────
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  logoUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  members     OrgMember[]
+  projects    Project[]
+  auditLogs   AuditLog[]
+  invitations Invitation[]
+  tokens      ServiceToken[]
+
+  @@index([slug])
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  orgId       String
+  name        String
+  slug        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  environments Environment[]
+
+  @@unique([orgId, slug])
+  @@index([orgId])
+}
+
+model Environment {
+  id          String          @id @default(cuid())
+  projectId   String
+  name        String          // e.g. "production", "staging", "development"
+  slug        String          // url-safe
+  color       String?         // hex color for UI badge
+  isProtected Boolean         @default(false) // extra confirmation required for mutations
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  project      Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  configItems  ConfigItem[]
+  tokens       ServiceToken[]
+  certificates Certificate[]
+
+  @@unique([projectId, slug])
+  @@index([projectId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONFIG ITEMS — typed, versioned, encrypted when secret
+// ─────────────────────────────────────────────────────────────
+
+model ConfigItem {
+  id            String         @id @default(cuid())
+  environmentId String
+  key           String
+  type          ConfigType     @default(STRING)
+  isSecret      Boolean        @default(false)
+  description   String?
+  tags          String[]       // Postgres array
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  isDeleted     Boolean        @default(false)  // soft delete
+  deletedAt     DateTime?
+
+  environment    Environment     @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  versions       ConfigVersion[]
+  revealLogs     SecretRevealLog[]
+  auditLogs      AuditLog[]
+
+  @@unique([environmentId, key])
+  @@index([environmentId])
+  @@index([tags])
+  @@index([isSecret])
+  @@index([isDeleted])
+}
+
+// Immutable version record — never updated after creation
+model ConfigVersion {
+  id           String   @id @default(cuid())
+  configItemId String
+  version      Int      // monotonically increasing per config item
+  valueCipher  String   // AES-256-GCM encrypted: base64(iv).base64(tag).base64(ct)
+  // For non-secret items, valueCipher is still encrypted at rest for uniform storage
+  changeNote   String?  // optional commit message
+  authorId     String
+  createdAt    DateTime @default(now())
+  isCurrent    Boolean  @default(true)  // denormalized for fast "get current value" queries
+
+  configItem ConfigItem @relation(fields: [configItemId], references: [id], onDelete: Cascade)
+  author     User       @relation(fields: [authorId], references: [id])
+
+  @@unique([configItemId, version])
+  @@index([configItemId, isCurrent])
+  @@index([authorId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CERTIFICATES
+// ─────────────────────────────────────────────────────────────
+
+model Certificate {
+  id            String          @id @default(cuid())
+  environmentId String
+  name          String
+  domain        String?
+  certPem       String          // encrypted PEM data
+  keyPem        String?         // encrypted private key (optional)
+  fingerprint   String          // SHA-256 fingerprint (plaintext, for display)
+  issuer        String?
+  subject       String?
+  notBefore     DateTime
+  notAfter      DateTime        // expiry date — used for alerting
+  alertAt       DateTime?       // custom alert threshold (default: 30 days before notAfter)
+  status        CertStatus      @default(VALID)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  environment Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  @@index([environmentId])
+  @@index([notAfter])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// SERVICE TOKENS — scoped read-only API access
+// ─────────────────────────────────────────────────────────────
+
+model ServiceToken {
+  id            String    @id @default(cuid())
+  orgId         String
+  environmentId String?   // null = org-wide (rarely used); set for env-scoped tokens
+  name          String
+  tokenHash     String    @unique  // SHA-256 of the plaintext token (never store plaintext)
+  prefix        String    // first 8 chars of plaintext for identification (e.g. "cv_prod_")
+  secretsScope  Boolean   @default(false)  // whether token can fetch secret values
+  expiresAt     DateTime?
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  environment Environment? @relation(fields: [environmentId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([environmentId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT & OBSERVABILITY
+// ─────────────────────────────────────────────────────────────
+
+// Immutable audit log — no application-level UPDATE or DELETE ever
+model AuditLog {
+  id           String       @id @default(cuid())
+  orgId        String?
+  actorId      String
+  action       AuditAction
+  resourceType ResourceType
+  resourceId   String?      // ID of the affected resource
+  configItemId String?      // FK if action affects a ConfigItem (for per-item history)
+  ipAddress    String?
+  userAgent    String?
+  metadata     Json?        // flexible JSON for action-specific details
+  createdAt    DateTime     @default(now())
+
+  actor      User          @relation(fields: [actorId], references: [id])
+  org        Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  configItem ConfigItem?   @relation(fields: [configItemId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([actorId])
+  @@index([configItemId])
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([createdAt(sort: Desc)])
+}
+
+// Dedicated reveal log — separate from general audit for compliance reporting
+model SecretRevealLog {
+  id           String   @id @default(cuid())
+  configItemId String
+  actorId      String
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  configItem ConfigItem @relation(fields: [configItemId], references: [id], onDelete: Cascade)
+  actor      User       @relation(fields: [actorId], references: [id])
+
+  @@index([configItemId])
+  @@index([actorId])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUTH INFRASTRUCTURE (preserved from v1)
+// ─────────────────────────────────────────────────────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model RateLimit {
+  id          String   @id @default(cuid())
+  key         String
+  windowStart DateTime
+  count       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([key, windowStart])
+  @@index([windowStart])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────
+
+enum OrgRole {
+  OWNER   // full control + billing; can delete org
+  ADMIN   // full control within org; cannot delete org
+  EDITOR  // can create/edit/delete configs; can reveal secrets
+  VIEWER  // read-only; cannot reveal secrets
+}
+
+enum ConfigType {
+  STRING
+  NUMBER
+  BOOLEAN
+  JSON
+}
+
+enum CertStatus {
+  VALID
+  EXPIRING_SOON  // within alertAt threshold
+  EXPIRED
+  REVOKED
+}
+
+enum AuditAction {
+  // Auth
+  USER_LOGIN
+  USER_LOGOUT
+  USER_REGISTER
+  USER_INVITED
+  USER_INVITATION_ACCEPTED
+  USER_ROLE_CHANGED
+  USER_REMOVED
+
+  // Org/Project/Environment
+  ORG_CREATED
+  ORG_UPDATED
+  ORG_DELETED
+  PROJECT_CREATED
+  PROJECT_UPDATED
+  PROJECT_DELETED
+  ENV_CREATED
+  ENV_UPDATED
+  ENV_DELETED
+
+  // Config
+  CONFIG_CREATED
+  CONFIG_UPDATED
+  CONFIG_DELETED
+  CONFIG_ROLLED_BACK
+
+  // Secrets (subset of config, tracked separately for emphasis)
+  SECRET_CREATED
+  SECRET_UPDATED
+  SECRET_DELETED
+  SECRET_REVEAL   // also written to SecretRevealLog
+
+  // Tokens
+  TOKEN_CREATED
+  TOKEN_ROTATED
+  TOKEN_REVOKED
+
+  // Certificates
+  CERT_UPLOADED
+  CERT_DELETED
+  CERT_RENEWED
+}
+
+enum ResourceType {
+  USER
+  ORGANIZATION
+  PROJECT
+  ENVIRONMENT
+  CONFIG_ITEM
+  SECRET
+  SERVICE_TOKEN
+  CERTIFICATE
+  AUDIT_LOG
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}

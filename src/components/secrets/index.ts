@@ -1,0 +1,1 @@
+export { SecretsVault } from "./SecretsVault";

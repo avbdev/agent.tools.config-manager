@@ -3,19 +3,21 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { canManageUsers } from "@/lib/rbac";
-import { Role } from "@prisma/client";
 import { writeAudit } from "@/lib/audit";
-import { asErrorResponse } from "@/lib/http";
+import { asErrorResponse, forbidden, unauthorized } from "@/lib/http";
 
 const schema = z.object({
-  userId: z.string().min(1),
-  role: z.enum([Role.ADMIN, Role.EDITOR, Role.VIEWER]),
+  userId: z.string().cuid(),
+  role: z.enum(["SUPERADMIN", "ADMIN", "EDITOR", "VIEWER"]),
 });
 
-export async function GET() {
+/**
+ * GET /api/users — list all users (ADMIN only).
+ */
+export async function GET(): Promise<NextResponse> {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!canManageUsers(user.role)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user) return unauthorized();
+  if (!canManageUsers(user.role)) return forbidden();
 
   const users = await prisma.user.findMany({
     select: { id: true, name: true, email: true, role: true, createdAt: true },
@@ -24,15 +26,31 @@ export async function GET() {
   return NextResponse.json({ data: users });
 }
 
-export async function PATCH(req: Request) {
+/**
+ * PATCH /api/users — update a user's role (ADMIN only).
+ */
+export async function PATCH(req: Request): Promise<NextResponse> {
   try {
     const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!canManageUsers(user.role)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (!user) return unauthorized();
+    if (!canManageUsers(user.role)) return forbidden();
 
     const input = schema.parse(await req.json());
-    await prisma.user.update({ where: { id: input.userId }, data: { role: input.role } });
-    await writeAudit(user.id, "user.role.update", `${input.userId}:${input.role}`);
+    await prisma.user.update({
+      where: { id: input.userId },
+      data: { role: input.role },
+    });
+
+    await writeAudit(
+      { actorId: user.id, actorEmail: user.email },
+      {
+        action: "user.role.update",
+        resource: `user:${input.userId}`,
+        resourceType: "User",
+        diff: { newRole: input.role },
+      },
+    );
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     return asErrorResponse(error);
