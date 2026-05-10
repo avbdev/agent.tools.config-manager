@@ -1,186 +1,175 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
-import { getCurrentUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { withAuth } from "@/lib/middleware";
 import { asErrorResponse } from "@/lib/http";
-import { canManageSecrets } from "@/lib/rbac";
-import { encryptSecret } from "@/lib/crypto";
-import { writeAudit } from "@/lib/audit";
+import { configItemRepository } from "@/lib/repositories";
 import {
-  configPayloadSchema,
-  normalizeTypedValue,
-  scopeToService,
-  serializeConfigPayload,
-  serviceToScope,
-} from "@/lib/config-schema";
+  createConfigSchema,
+  updateConfigSchema,
+  listConfigsQuerySchema,
+  bulkDeleteSchema,
+  rollbackSchema,
+} from "@/lib/validation";
+import { writeAudit } from "@/lib/audit";
+import { getClientIp } from "@/lib/http";
+import type { SessionUser } from "@/lib/auth";
 
-const querySchema = z.object({
-  q: z.string().optional(),
-  environment: z.string().optional(),
-  org: z.string().optional(),
-  project: z.string().optional(),
-  tag: z.string().optional(),
-});
+// ---------------------------------------------------------------------------
+// GET /api/configs?projectId=...&envId=...&search=...
+// ---------------------------------------------------------------------------
 
-function parseStoredValue(cipher: string) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const GET = withAuth(async (req: Request, _user: SessionUser): Promise<NextResponse> => {
   try {
-    return JSON.parse(cipher) as { value?: unknown; type?: string; tags?: string[]; description?: string; isSecret?: boolean };
-  } catch {
-    return { value: "********", type: "string", tags: [] };
-  }
-}
+    const params = Object.fromEntries(new URL(req.url).searchParams);
+    const query = listConfigsQuerySchema.parse(params);
 
-export async function GET(req: Request) {
-  try {
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    const query = querySchema.parse(Object.fromEntries(new URL(req.url).searchParams.entries()));
-    const settings = await prisma.setting.findMany({
-      where: { ownerId: user.id },
-      orderBy: { updatedAt: "desc" },
-      take: 500,
+    const { items, total } = await configItemRepository.list({
+      projectId: query.projectId,
+      envId: query.envId,
+      search: query.search,
+      tag: query.tag,
+      isSecret: query.isSecret,
+      skip: query.skip,
+      take: query.take,
     });
 
-    const filtered = settings
-      .map((s) => {
-        const parsed = parseStoredValue(s.valueCipher);
-        const scope = serviceToScope(s.service);
-        const tags = parsed.tags || [];
-        return {
-          id: s.id,
-          key: s.key,
-          scope,
-          type: parsed.type || "string",
-          tags,
-          description: parsed.description || "",
-          value: s.isSecret ? "********" : parsed.value,
-          isSecret: s.isSecret,
-          updatedAt: s.updatedAt,
-        };
-      })
-      .filter((s) => {
-        if (query.environment && s.scope.environment !== query.environment) return false;
-        if (query.org && s.scope.org !== query.org) return false;
-        if (query.project && s.scope.project !== query.project) return false;
-        if (query.tag && !s.tags.includes(query.tag)) return false;
-        if (query.q && !`${s.key} ${s.description} ${s.tags.join(" ")}`.toLowerCase().includes(query.q.toLowerCase())) return false;
-        return true;
-      });
+    // Strip valuePlain for secrets — never return plaintext in list
+    const safeItems = items.map((item) => ({
+      id: item.id,
+      projectId: item.projectId,
+      envId: item.envId,
+      key: item.key,
+      valueType: item.valueType,
+      isSecret: item.isSecret,
+      displayValue: item.isSecret ? "••••••••" : (item.valuePlain ?? ""),
+      description: item.description,
+      tags: item.tags,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    }));
 
-    return NextResponse.json({ data: filtered });
+    return NextResponse.json({ data: safeItems, total });
   } catch (error) {
     return asErrorResponse(error);
   }
-}
+});
 
-export async function POST(req: Request) {
+// ---------------------------------------------------------------------------
+// POST /api/configs — create
+// ---------------------------------------------------------------------------
+
+export const POST = withAuth(async (req: Request, user: SessionUser): Promise<NextResponse> => {
   try {
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!canManageSecrets(user.role)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
     const body = await req.json();
-    const input = configPayloadSchema.parse(body);
-    const service = scopeToService(input.scope);
+    const input = createConfigSchema.parse(body);
 
-    const previous = await prisma.setting.findUnique({
-      where: { ownerId_service_key: { ownerId: user.id, service, key: input.key } },
-    });
-
-    const normalized = {
-      ...input,
-      value: normalizeTypedValue(input.type, input.value),
-    };
-    const serialized = serializeConfigPayload(normalized);
-    const valueCipher = input.isSecret ? encryptSecret(serialized) : serialized;
-
-    const setting = await prisma.setting.upsert({
-      where: { ownerId_service_key: { ownerId: user.id, service, key: input.key } },
-      create: { ownerId: user.id, key: input.key, service, isSecret: input.isSecret, valueCipher },
-      update: { isSecret: input.isSecret, valueCipher },
+    const item = await configItemRepository.create({
+      projectId: input.projectId,
+      envId: input.envId,
+      key: input.key,
+      valueType: input.valueType,
+      rawValue: input.rawValue,
+      isSecret: input.isSecret,
+      description: input.description,
+      tags: input.tags,
+      createdById: user.id,
     });
 
     await writeAudit(
-      user.id,
-      "config.versioned_upsert",
-      JSON.stringify({
-        settingId: setting.id,
-        service,
-        key: input.key,
-        previousValueCipher: previous?.valueCipher ?? null,
-        previousIsSecret: previous?.isSecret ?? null,
-        nextValueCipher: valueCipher,
-        nextIsSecret: input.isSecret,
-      }),
+      { actorId: user.id, actorEmail: user.email, ipAddress: getClientIp(req) },
+      {
+        action: "config.create",
+        resource: `config:${item.id}`,
+        resourceType: "ConfigItem",
+        diff: { key: item.key, projectId: item.projectId, envId: item.envId },
+      },
     );
 
-    return NextResponse.json({ ok: true, id: setting.id });
+    return NextResponse.json({ ok: true, id: item.id }, { status: 201 });
   } catch (error) {
     return asErrorResponse(error);
   }
-}
-
-const bulkSchema = z.object({
-  ids: z.array(z.string().min(1)).min(1),
-  operation: z.enum(["delete", "tag-add"]),
-  tag: z.string().optional(),
 });
 
-export async function PUT(req: Request) {
-  try {
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!canManageSecrets(user.role)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+// ---------------------------------------------------------------------------
+// PATCH /api/configs — update or rollback
+// ---------------------------------------------------------------------------
 
+export const PATCH = withAuth(async (req: Request, user: SessionUser): Promise<NextResponse> => {
+  try {
     const body = await req.json();
 
     if (body?.action === "rollback") {
-      const schema = z.object({ settingId: z.string().min(1) });
-      const input = schema.parse(body);
-      const history = await prisma.auditLog.findMany({
-        where: { actorId: user.id, action: "config.versioned_upsert", details: { contains: input.settingId } },
-        orderBy: { createdAt: "desc" },
-        take: 1,
-      });
+      const input = rollbackSchema.parse(body);
+      const item = await configItemRepository.rollbackToVersion(
+        input.configItemId,
+        input.targetVersion,
+        user.id,
+      );
 
-      const latest = history[0];
-      if (!latest) return NextResponse.json({ error: "No rollback point" }, { status: 404 });
-      const payload = JSON.parse(latest.details) as { previousValueCipher: string | null; previousIsSecret: boolean | null };
-      if (!payload.previousValueCipher || payload.previousIsSecret === null) {
-        return NextResponse.json({ error: "No previous value to rollback" }, { status: 400 });
-      }
-
-      await prisma.setting.update({
-        where: { id: input.settingId },
-        data: { valueCipher: payload.previousValueCipher, isSecret: payload.previousIsSecret },
-      });
-      await writeAudit(user.id, "config.rollback", input.settingId);
-      return NextResponse.json({ ok: true });
-    }
-
-    const input = bulkSchema.parse(body);
-    if (input.operation === "delete") {
-      const deleted = await prisma.setting.deleteMany({ where: { ownerId: user.id, id: { in: input.ids } } });
-      await writeAudit(user.id, "config.bulk_delete", JSON.stringify({ ids: input.ids, count: deleted.count }));
-      return NextResponse.json({ ok: true, count: deleted.count });
-    }
-
-    const settings = await prisma.setting.findMany({ where: { ownerId: user.id, id: { in: input.ids } } });
-    for (const setting of settings) {
-      if (setting.isSecret) continue;
-      const parsed = parseStoredValue(setting.valueCipher);
-      const tags = new Set([...(parsed.tags || []), input.tag || "managed"]);
-      await prisma.setting.update({
-        where: { id: setting.id },
-        data: {
-          valueCipher: JSON.stringify({ ...parsed, tags: [...tags] }),
+      await writeAudit(
+        { actorId: user.id, actorEmail: user.email, ipAddress: getClientIp(req) },
+        {
+          action: "config.rollback",
+          resource: `config:${item.id}`,
+          resourceType: "ConfigItem",
+          diff: { targetVersion: input.targetVersion },
         },
-      });
+      );
+
+      return NextResponse.json({ ok: true, id: item.id });
     }
-    await writeAudit(user.id, "config.bulk_tag", JSON.stringify({ ids: input.ids, tag: input.tag || "managed" }));
-    return NextResponse.json({ ok: true, count: settings.length });
+
+    const input = updateConfigSchema.parse(body);
+    const item = await configItemRepository.update({
+      id: input.id,
+      valueType: input.valueType,
+      rawValue: input.rawValue,
+      isSecret: input.isSecret,
+      description: input.description,
+      tags: input.tags,
+      createdById: user.id,
+    });
+
+    await writeAudit(
+      { actorId: user.id, actorEmail: user.email, ipAddress: getClientIp(req) },
+      {
+        action: "config.update",
+        resource: `config:${item.id}`,
+        resourceType: "ConfigItem",
+        diff: { key: item.key },
+      },
+    );
+
+    return NextResponse.json({ ok: true, id: item.id });
   } catch (error) {
     return asErrorResponse(error);
   }
-}
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/configs — bulk delete
+// ---------------------------------------------------------------------------
+
+export const DELETE = withAuth(async (req: Request, user: SessionUser): Promise<NextResponse> => {
+  try {
+    const body = await req.json();
+    const input = bulkDeleteSchema.parse(body);
+
+    const count = await configItemRepository.bulkDelete(input.ids, input.projectId);
+
+    await writeAudit(
+      { actorId: user.id, actorEmail: user.email, ipAddress: getClientIp(req) },
+      {
+        action: "config.bulk_delete",
+        resource: `project:${input.projectId}`,
+        resourceType: "ConfigItem",
+        diff: { ids: input.ids, count },
+      },
+    );
+
+    return NextResponse.json({ ok: true, count });
+  } catch (error) {
+    return asErrorResponse(error);
+  }
+});
