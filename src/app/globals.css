@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #060611;
+  --foreground: #f5f7ff;
 }
 
 @theme inline {
@@ -20,7 +20,48 @@
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(1200px 700px at 0% 0%, #2f1f7b 0%, transparent 50%),
+    radial-gradient(1000px 600px at 100% 0%, #003e82 0%, transparent 44%),
+    linear-gradient(180deg, #080b1a 0%, #060611 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Inter, Arial, sans-serif;
+}
+
+.hero-premium {
+  background: linear-gradient(140deg, rgba(82, 53, 216, 0.85), rgba(24, 123, 220, 0.72));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 20px 80px rgba(23, 33, 86, 0.45);
+}
+
+.glass-card {
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(13, 18, 37, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.input-premium {
+  width: 100%;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.65rem 0.8rem;
+  color: #fff;
+}
+
+.btn-premium {
+  border-radius: 0.8rem;
+  background: linear-gradient(135deg, #7f49ff, #2e98ff);
+  color: white;
+  padding: 0.7rem 1rem;
+  font-weight: 600;
+}
+
+.btn-danger {
+  border-radius: 0.7rem;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.42);
+  color: #fecaca;
+  padding: 0.45rem 0.75rem;
 }
