@@ -1,32 +1,52 @@
 import { PrismaClient } from "@/generated/prisma";
 
 /**
- * Singleton Prisma client with:
- * - Audit-log immutability middleware (blocks UPDATE/DELETE on AuditLog)
- * - Development query logging
+ * Singleton Prisma client (v6) with AuditLog immutability enforcement.
+ *
+ * Prisma v6 replaced `$use()` middleware with `$extends()` query extensions.
+ * The `auditLogGuard` extension intercepts every query and throws before any
+ * UPDATE or DELETE reaches the AuditLog table.
  *
  * Never import PrismaClient directly — always import { prisma } from here.
  */
-const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 
-export const prisma: PrismaClient =
-  globalForPrisma.prisma ??
-  new PrismaClient({
+const auditLogGuard = {
+  query: {
+    auditLog: {
+      // Intercept updateMany — which Prisma uses for both update and updateMany
+      async updateMany(args: {
+        args: unknown;
+        query: (args: unknown) => Promise<unknown>;
+      }) {
+        throw new Error("[AuditLog] Mutation forbidden: audit log is immutable.");
+        return args.query(args.args); // unreachable — satisfies type checker
+      },
+      async deleteMany(args: {
+        args: unknown;
+        query: (args: unknown) => Promise<unknown>;
+      }) {
+        throw new Error("[AuditLog] Deletion forbidden: audit log is immutable.");
+        return args.query(args.args); // unreachable
+      },
+    },
+  },
+};
+
+function makePrismaClient() {
+  const base = new PrismaClient({
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
+  return base.$extends(auditLogGuard);
+}
 
-// Immutability guard: AuditLog rows must never be modified or deleted.
-prisma.$use(async (params, next) => {
-  if (params.model === "AuditLog") {
-    if (params.action === "update" || params.action === "updateMany") {
-      throw new Error("[AuditLog] Mutation forbidden: audit log is immutable.");
-    }
-    if (params.action === "delete" || params.action === "deleteMany") {
-      throw new Error("[AuditLog] Deletion forbidden: audit log is immutable.");
-    }
-  }
-  return next(params);
-});
+type ExtendedPrismaClient = ReturnType<typeof makePrismaClient>;
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: ExtendedPrismaClient;
+};
+
+export const prisma: ExtendedPrismaClient =
+  globalForPrisma.prisma ?? makePrismaClient();
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;

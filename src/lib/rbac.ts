@@ -25,8 +25,10 @@ export function canManageSecrets(role: Role): boolean {
 
 /**
  * Returns true if the org role permits reading configs and metadata.
+ * All org members may read — the parameter is accepted for future fine-grained control.
  */
-export function orgCanRead(orgRole: OrgRole): boolean {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function orgCanRead(_orgRole: OrgRole): boolean {
   return true; // All org members can read
 }
 

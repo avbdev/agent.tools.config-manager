@@ -5,18 +5,28 @@ import "./globals.css";
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
+  display: "swap",
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "agent.tools.config-manager",
-  description: "Production-grade configuration manager with encrypted secrets",
+  title: {
+    default: "ConfigManager — Secure Infrastructure Config",
+    template: "%s | ConfigManager",
+  },
+  description:
+    "Enterprise-grade dashboard for all infrastructure configs, secrets, API keys, certificates, and environment variables.",
 };
 
+/**
+ * Root layout — applies fonts and global CSS.
+ * Security headers are applied via next.config.ts (server-layer, not client-layer).
+ */
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -27,7 +37,7 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }

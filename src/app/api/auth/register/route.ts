@@ -1,34 +1,30 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { hashPassword, createSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { Role } from "@prisma/client";
 import { asErrorResponse, getClientIp, tooManyRequests } from "@/lib/http";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { registerSchema } from "@/lib/validation";
+import { writeAudit } from "@/lib/audit";
 
-const schema = z.object({
-  name: z.string().min(1),
-  email: z.string().email(),
-  password: z.string().min(8),
-});
-
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
     const limiter = await checkRateLimit({
       key: `register:${getClientIp(req)}`,
-      limit: 10,
+      limit: 5,
       windowMs: 15 * 60 * 1000,
     });
     if (!limiter.allowed) return tooManyRequests(limiter.retryAfterSeconds);
 
-    const contentType = req.headers.get("content-type") || "";
-    const body = contentType.includes("application/json")
+    const contentType = req.headers.get("content-type") ?? "";
+    const raw = contentType.includes("application/json")
       ? await req.json()
       : Object.fromEntries((await req.formData()).entries());
-    const input = schema.parse(body);
+
+    const input = registerSchema.parse(raw);
+
     const existing = await prisma.user.findUnique({ where: { email: input.email } });
     if (existing) {
-      return NextResponse.json({ error: "Email already exists" }, { status: 409 });
+      return NextResponse.json({ error: "Email already registered" }, { status: 409 });
     }
 
     const count = await prisma.user.count();
@@ -37,10 +33,16 @@ export async function POST(req: Request) {
         name: input.name,
         email: input.email,
         passwordHash: await hashPassword(input.password),
-        role: count === 0 ? Role.ADMIN : Role.VIEWER,
+        role: count === 0 ? "ADMIN" : "VIEWER",
       },
     });
+
     await createSession(user.id);
+    await writeAudit(
+      { actorId: user.id, actorEmail: user.email, ipAddress: getClientIp(req) },
+      { action: "auth.register", resource: `user:${user.id}`, resourceType: "User" },
+    );
+
     if (contentType.includes("application/json")) {
       return NextResponse.json({ ok: true, role: user.role });
     }

@@ -151,10 +151,10 @@ export class SecretRepository {
       prisma.secret.count({ where }),
     ]);
 
-    return {
-      items: secrets.map((s) => ({ ...s, maskedValue: "••••••••" as const, valueCipher: undefined as never })),
-      total,
-    };
+      return {
+        items: secrets.map((s) => ({ ...s, maskedValue: "••••••••" as const })),
+        total,
+      };
   }
 
   /** Finds a secret by ID (without cipher value). */
@@ -177,7 +177,7 @@ export class SecretRepository {
         valueCipher: false,
       },
     });
-    return { ...secret, maskedValue: "••••••••" as const, valueCipher: undefined as never };
+    return { ...secret, maskedValue: "••••••••" as const };
   }
 
   /**
@@ -236,7 +236,8 @@ export class SecretRepository {
   // ---------------------------------------------------------------------------
 
   #toSummary(secret: Secret): SecretSummary {
-    const { valueCipher: _omitted, ...rest } = secret;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { valueCipher: _cipher, ...rest } = secret;
     return { ...rest, maskedValue: "••••••••" };
   }
 }
