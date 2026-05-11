@@ -1,4 +1,4 @@
-import { PrismaClient } from "@/generated/prisma";
+import { PrismaClient } from "@prisma/client";
 
 /**
  * Singleton Prisma client (v6) with AuditLog immutability enforcement.

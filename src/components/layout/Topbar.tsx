@@ -1,22 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { signOut } from "next-auth/react";
 
 type Props = {
   userEmail: string;
 };
 
-/**
- * Top navigation bar with user avatar and logout action.
- * Client component for interactive logout form submission.
- */
 export function Topbar({ userEmail }: Props) {
   const [loggingOut, setLoggingOut] = useState(false);
 
   async function handleLogout() {
     setLoggingOut(true);
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.href = "/";
+    await signOut({ callbackUrl: "/" });
   }
 
   const initials = userEmail.slice(0, 2).toUpperCase();
@@ -31,7 +27,6 @@ export function Topbar({ userEmail }: Props) {
       }}
     >
       <div />
-
       <div className="flex items-center gap-3">
         <span className="text-sm" style={{ color: "var(--color-muted)" }}>
           {userEmail}

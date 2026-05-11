@@ -1,87 +1,39 @@
-import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { auth, signIn } from "@/auth"
+import { redirect } from "next/navigation"
 
-/**
- * Root page — redirects authenticated users to dashboard,
- * unauthenticated users see the login/register gate.
- */
-export default async function Home() {
-  const user = await getCurrentUser();
-  if (user) redirect("/dashboard");
+export default async function HomePage() {
+  const session = await auth()
+  if (session) redirect("/dashboard")
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-md space-y-6">
-        {/* Hero */}
-        <div className="hero p-8 text-center">
-          <div
-            className="mx-auto mb-4 w-12 h-12 rounded-xl flex items-center justify-center text-xl font-bold"
-            style={{
-              background: "rgba(255,255,255,0.15)",
-              border: "1px solid rgba(255,255,255,0.2)",
-            }}
-          >
-            CM
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight">ConfigManager</h1>
-          <p className="mt-2 text-sm text-zinc-300">
-            Secure, enterprise-grade configuration control plane.
+    <main className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <div className="w-full max-w-sm space-y-6 p-8 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+        <div className="space-y-2 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight">Config Manager</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Secure configuration and secrets management
           </p>
         </div>
-
-        {/* Login form */}
-        <div className="card p-6 space-y-4">
-          <h2 className="font-semibold">Sign in</h2>
-          <form method="post" action="/api/auth/login" className="space-y-3">
-            <input
-              className="input"
-              name="email"
-              placeholder="Email address"
-              type="email"
-              autoComplete="email"
-              required
-            />
-            <input
-              className="input"
-              name="password"
-              placeholder="Password"
-              type="password"
-              autoComplete="current-password"
-              required
-            />
-            <button className="btn w-full" type="submit">
-              Sign in
-            </button>
-          </form>
-        </div>
-
-        {/* Register form */}
-        <div className="card p-6 space-y-4">
-          <h2 className="font-semibold">Create account</h2>
-          <form method="post" action="/api/auth/register" className="space-y-3">
-            <input className="input" name="name" placeholder="Full name" required />
-            <input
-              className="input"
-              name="email"
-              placeholder="Email address"
-              type="email"
-              autoComplete="email"
-              required
-            />
-            <input
-              className="input"
-              name="password"
-              placeholder="Password (min 8 chars, upper + lower + number)"
-              type="password"
-              autoComplete="new-password"
-              required
-            />
-            <button className="btn w-full" type="submit">
-              Create account
-            </button>
-          </form>
-        </div>
+        <form
+          action={async () => {
+            "use server"
+            await signIn("microsoft-entra-id", { redirectTo: "/dashboard" })
+          }}
+        >
+          <button
+            type="submit"
+            className="w-full flex items-center justify-center gap-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+          >
+            <svg viewBox="0 0 21 21" className="h-5 w-5" aria-hidden="true">
+              <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+              <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+              <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+              <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+            </svg>
+            Sign in with Microsoft
+          </button>
+        </form>
       </div>
     </main>
-  );
+  )
 }

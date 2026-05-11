@@ -1,0 +1,10 @@
+node_modules
+.next
+.env*
+*.md
+.git
+.gitignore
+prisma/migrations/*.sql
+coverage
+e2e
+playwright-report
