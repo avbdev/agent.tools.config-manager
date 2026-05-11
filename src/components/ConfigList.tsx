@@ -25,7 +25,7 @@ interface ConfigsResponse {
 }
 
 const ENV_OPTIONS = [
-  { value: "", label: "All environments" },
+  { value: "ALL", label: "All environments" },
   { value: "DEV", label: "DEV" },
   { value: "STAGING", label: "STAGING" },
   { value: "PROD", label: "PROD" },
@@ -50,13 +50,13 @@ interface ConfigListProps {
 }
 
 export function ConfigList({ role }: ConfigListProps) {
-  const [environment, setEnvironment] = useState("")
+  const [environment, setEnvironment] = useState("ALL")
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   const [allItems, setAllItems] = useState<ConfigItem[]>([])
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["configs", { environment, cursor }],
-    queryFn: () => fetchConfigs({ environment: environment || undefined, cursor }),
+    queryFn: () => fetchConfigs({ environment: environment === "ALL" ? undefined : environment, cursor }),
     placeholderData: (prev) => prev,
     select: (res) => {
       // Merge paginated results
