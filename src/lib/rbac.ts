@@ -1,90 +1,31 @@
-import type { OrgRole, Role } from "@/generated/prisma";
+import { Role } from "@prisma/client"
 
-// ---------------------------------------------------------------------------
-// Global role guards (system-level)
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true if the user has ADMIN or SUPERADMIN global role,
- * allowing them to manage users across the system.
- */
-export function canManageUsers(role: Role): boolean {
-  return role === "ADMIN" || role === "SUPERADMIN";
-}
-
-/**
- * Returns true if the user has any write-capable global role.
- */
+/** EDITOR and ADMIN can read and write configs (create, update, reveal). */
 export function canManageSecrets(role: Role): boolean {
-  return role === "ADMIN" || role === "EDITOR" || role === "SUPERADMIN";
+  return role === Role.ADMIN || role === Role.EDITOR
 }
 
-// ---------------------------------------------------------------------------
-// Org-scoped role guards
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true if the org role permits reading configs and metadata.
- * All org members may read — the parameter is accepted for future fine-grained control.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function orgCanRead(_orgRole: OrgRole): boolean {
-  return true; // All org members can read
+/** Only ADMIN can manage users, roles, and org settings. */
+export function canManageUsers(role: Role): boolean {
+  return role === Role.ADMIN
 }
 
-/**
- * Returns true if the org role permits writing configs / secrets.
- */
-export function orgCanWrite(orgRole: OrgRole): boolean {
-  return orgRole === "OWNER" || orgRole === "ADMIN" || orgRole === "EDITOR";
+/** EDITOR and ADMIN can create new configs. */
+export function canCreate(role: Role): boolean {
+  return role === Role.ADMIN || role === Role.EDITOR
 }
 
-/**
- * Returns true if the org role permits deleting resources.
- */
-export function orgCanDelete(orgRole: OrgRole): boolean {
-  return orgRole === "OWNER" || orgRole === "ADMIN";
+/** EDITOR and ADMIN can update existing configs. */
+export function canUpdate(role: Role): boolean {
+  return role === Role.ADMIN || role === Role.EDITOR
 }
 
-/**
- * Returns true if the org role permits revealing secret plaintext values.
- * Note: the caller must ALSO verify session elevation (`isSessionElevated`).
- */
-export function orgCanRevealSecrets(orgRole: OrgRole): boolean {
-  return orgRole === "OWNER" || orgRole === "ADMIN" || orgRole === "EDITOR";
+/** Only ADMIN can permanently soft-delete configs. */
+export function canDelete(role: Role): boolean {
+  return role === Role.ADMIN
 }
 
-/**
- * Returns true if the org role permits managing members and API tokens.
- */
-export function orgCanManageMembers(orgRole: OrgRole): boolean {
-  return orgRole === "OWNER" || orgRole === "ADMIN";
-}
-
-// ---------------------------------------------------------------------------
-// RBAC guard helper (throws on failure, for use in route handlers)
-// ---------------------------------------------------------------------------
-
-export type RbacResult =
-  | { allowed: true }
-  | { allowed: false; reason: string };
-
-/**
- * Asserts that an RBAC check passed. Throws a typed error if not.
- * Use at the start of route handlers after resolving the session.
- *
- * @example
- * assertRbac(orgCanWrite(member.role), "Insufficient org permissions to write configs");
- */
-export function assertRbac(allowed: boolean, reason: string): void {
-  if (!allowed) {
-    const err = new Error(reason) as Error & { code: "RBAC_DENIED" };
-    err.code = "RBAC_DENIED";
-    throw err;
-  }
-}
-
-/** Type guard for RBAC denial errors. */
-export function isRbacDenied(err: unknown): err is Error & { code: "RBAC_DENIED" } {
-  return err instanceof Error && (err as Error & { code?: string }).code === "RBAC_DENIED";
+/** EDITOR and ADMIN can reveal encrypted secret values. */
+export function canReveal(role: Role): boolean {
+  return role === Role.ADMIN || role === Role.EDITOR
 }

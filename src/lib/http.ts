@@ -1,96 +1,71 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { isRbacDenied } from "@/lib/rbac";
-
-// ---------------------------------------------------------------------------
-// Client IP extraction
-// ---------------------------------------------------------------------------
 
 /**
- * Extracts the real client IP from request headers.
- * Handles Vercel/CF `x-forwarded-for` header chains.
+ * Extracts the real client IP from a request, guarding against spoofed
+ * X-Forwarded-For headers by only trusting that header when X-Real-IP
+ * originates from a trusted proxy CIDR (configured via TRUSTED_PROXY_CIDRS).
+ *
+ * TRUSTED_PROXY_CIDRS is a comma-separated list of IPv4 CIDR blocks, e.g.:
+ *   "10.0.0.0/8,172.16.0.0/12,127.0.0.1/32"
  */
 export function getClientIp(req: Request): string {
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]?.trim() ?? "unknown";
-  return req.headers.get("x-real-ip") ?? "unknown";
+  const trustedCidrs = (process.env.TRUSTED_PROXY_CIDRS ?? "127.0.0.1/32")
+    .split(",")
+    .map((s) => s.trim())
+
+  const realIp = req.headers.get("x-real-ip") ?? ""
+  const xff = req.headers.get("x-forwarded-for")
+
+  // Only honour X-Forwarded-For when x-real-ip comes from a trusted proxy.
+  // This prevents an external client from spoofing their IP via the header.
+  if (xff && realIp && isInTrustedCidr(realIp, trustedCidrs)) {
+    return xff.split(",")[0]?.trim() ?? realIp
+  }
+
+  return realIp || "unknown"
 }
 
-/**
- * Extracts the User-Agent string from a request.
- */
-export function getUserAgent(req: Request): string {
-  return req.headers.get("user-agent") ?? "";
+function isInTrustedCidr(ip: string, cidrs: string[]): boolean {
+  return cidrs.some((cidr) => {
+    if (cidr === ip) return true
+    const [network, bits] = cidr.split("/")
+    if (!bits || !network) return false
+    const mask = ~((1 << (32 - parseInt(bits, 10))) - 1) >>> 0
+    const ipInt = ipToInt(ip)
+    const netInt = ipToInt(network)
+    return (ipInt & mask) === (netInt & mask)
+  })
 }
 
-// ---------------------------------------------------------------------------
-// Standard response constructors
-// ---------------------------------------------------------------------------
+function ipToInt(ip: string): number {
+  return ip
+    .split(".")
+    .reduce((acc, octet) => (acc << 8) | parseInt(octet, 10), 0) >>> 0
+}
 
-/** 400 Bad Request */
-export function badRequest(message = "Invalid request"): NextResponse {
+export function badRequest(message = "Invalid request") {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
-/** 401 Unauthorized */
-export function unauthorized(message = "Authentication required"): NextResponse {
-  return NextResponse.json({ error: message }, { status: 401 });
-}
-
-/** 403 Forbidden */
-export function forbidden(message = "Insufficient permissions"): NextResponse {
-  return NextResponse.json({ error: message }, { status: 403 });
-}
-
-/** 404 Not Found */
-export function notFound(message = "Resource not found"): NextResponse {
-  return NextResponse.json({ error: message }, { status: 404 });
-}
-
-/** 409 Conflict */
-export function conflict(message = "Resource already exists"): NextResponse {
-  return NextResponse.json({ error: message }, { status: 409 });
-}
-
-/** 429 Too Many Requests */
-export function tooManyRequests(retryAfterSeconds: number): NextResponse {
+/**
+ * @deprecated Use `tooManyRequestsResponse` from `@/lib/rate-limit` instead,
+ * which accepts a `Date` and computes Retry-After automatically.
+ */
+export function tooManyRequests(retryAfterSeconds: number) {
   return NextResponse.json(
     { error: "Too many requests" },
-    {
-      status: 429,
-      headers: { "Retry-After": String(retryAfterSeconds) },
-    },
+    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
   );
 }
 
-// ---------------------------------------------------------------------------
-// Unified error response handler
-// ---------------------------------------------------------------------------
-
-/**
- * Maps known error types to appropriate HTTP responses.
- * Internal error details are NEVER leaked to the client.
- *
- * - `ZodError` → 400 with field-level messages
- * - RBAC denial → 403
- * - Everything else → 500 (with console.error for server-side observability)
- */
-export function asErrorResponse(error: unknown): NextResponse {
+export function asErrorResponse(error: unknown) {
   if (error instanceof ZodError) {
     return NextResponse.json(
-      {
-        error: "Validation failed",
-        issues: error.issues.map((i) => ({ path: i.path, message: i.message })),
-      },
+      { error: "Validation failed", issues: error.issues.map((i) => i.message) },
       { status: 400 },
     );
   }
 
-  if (isRbacDenied(error)) {
-    return forbidden(error.message);
-  }
-
-  // Log the real error server-side but never expose it to the client
-  console.error("[API Error]", error);
   return NextResponse.json({ error: "Internal server error" }, { status: 500 });
 }

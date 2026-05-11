@@ -1,58 +1,72 @@
-import { NextResponse } from "next/server";
-import { z } from "zod";
-import { getCurrentUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { canManageUsers } from "@/lib/rbac";
-import { writeAudit } from "@/lib/audit";
-import { asErrorResponse, forbidden, unauthorized } from "@/lib/http";
+import { NextRequest, NextResponse } from "next/server"
+import { z } from "zod"
+import { auth } from "@/auth"
+import { prisma } from "@/lib/prisma"
+import { canManageUsers } from "@/lib/rbac"
+import { Role, AuditAction } from "@prisma/client"
+import { writeAudit } from "@/lib/audit"
+import { asErrorResponse } from "@/lib/http"
+import { getClientIp } from "@/lib/http"
 
 const schema = z.object({
-  userId: z.string().cuid(),
-  role: z.enum(["SUPERADMIN", "ADMIN", "EDITOR", "VIEWER"]),
-});
+  userId: z.string().min(1),
+  role: z.enum([Role.ADMIN, Role.EDITOR, Role.VIEWER]),
+})
 
-/**
- * GET /api/users — list all users (ADMIN only).
- */
-export async function GET(): Promise<NextResponse> {
-  const user = await getCurrentUser();
-  if (!user) return unauthorized();
-  if (!canManageUsers(user.role)) return forbidden();
+export async function GET() {
+  const session = await auth()
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+  if (!canManageUsers(session.user.role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  }
 
   const users = await prisma.user.findMany({
     select: { id: true, name: true, email: true, role: true, createdAt: true },
     orderBy: { createdAt: "asc" },
-  });
-  return NextResponse.json({ data: users });
+  })
+  return NextResponse.json({ data: users })
 }
 
-/**
- * PATCH /api/users — update a user's role (ADMIN only).
- */
-export async function PATCH(req: Request): Promise<NextResponse> {
+export async function PATCH(req: NextRequest) {
   try {
-    const user = await getCurrentUser();
-    if (!user) return unauthorized();
-    if (!canManageUsers(user.role)) return forbidden();
+    const session = await auth()
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    if (!canManageUsers(session.user.role)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
 
-    const input = schema.parse(await req.json());
+    const orgMember = await prisma.orgMember.findFirst({
+      where: { userId: session.user.id },
+    })
+
+    const input = schema.parse(await req.json())
+    const target = await prisma.user.findUnique({ where: { id: input.userId } })
+
     await prisma.user.update({
       where: { id: input.userId },
       data: { role: input.role },
-    });
+    })
 
-    await writeAudit(
-      { actorId: user.id, actorEmail: user.email },
-      {
-        action: "user.role.update",
+    if (orgMember) {
+      writeAudit({
+        orgId: orgMember.orgId,
+        actorId: session.user.id,
+        actorEmail: session.user.email ?? "",
+        action: AuditAction.ROLE_CHANGE,
         resource: `user:${input.userId}`,
-        resourceType: "User",
-        diff: { newRole: input.role },
-      },
-    );
+        oldValue: target?.role,
+        newValue: input.role,
+        ipAddress: getClientIp(req),
+        userAgent: req.headers.get("user-agent") ?? "",
+      })
+    }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true })
   } catch (error) {
-    return asErrorResponse(error);
+    return asErrorResponse(error)
   }
 }

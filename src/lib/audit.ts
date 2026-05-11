@@ -1,74 +1,45 @@
-import { prisma } from "@/lib/prisma";
+import { prisma } from "@/lib/prisma"
+import { AuditAction } from "@prisma/client"
 
-export type AuditAction =
-  | "auth.login"
-  | "auth.logout"
-  | "auth.register"
-  | "auth.elevate"
-  | "config.create"
-  | "config.update"
-  | "config.delete"
-  | "config.bulk_delete"
-  | "config.rollback"
-  | "secret.create"
-  | "secret.update"
-  | "secret.delete"
-  | "secret.reveal"
-  | "certificate.create"
-  | "certificate.update"
-  | "certificate.delete"
-  | "certificate.rotate"
-  | "token.create"
-  | "token.revoke"
-  | "user.role.update"
-  | "org.create"
-  | "org.member.add"
-  | "org.member.remove";
-
-export type AuditContext = {
-  actorId: string;
-  actorEmail: string;
-  orgId?: string;
-  ipAddress?: string;
-  userAgent?: string;
-};
-
-export type AuditPayload = {
-  action: AuditAction;
-  resource: string;       // e.g. "secret:clxyz123"
-  resourceType: string;   // e.g. "Secret"
-  /** JSON-serialisable diff — MUST NOT contain plaintext secret values. */
-  diff?: Record<string, unknown>;
-};
+export interface AuditParams {
+  orgId: string
+  actorId: string
+  actorEmail: string
+  action: AuditAction
+  /** Structured resource identifier, e.g. "config:stripe.API_KEY.PROD" */
+  resource: string
+  /** JSON snapshot of the previous value (secrets must be masked). */
+  oldValue?: string | null
+  /** JSON snapshot of the new value (secrets must be masked). */
+  newValue?: string | null
+  ipAddress?: string
+  userAgent?: string
+  /** OTel trace ID for cross-system correlation. */
+  traceId?: string
+}
 
 /**
- * Writes an immutable audit log entry.
- *
- * The AuditLog table has a Prisma middleware guard that blocks all
- * UPDATE and DELETE operations at the ORM level.
- *
- * SECURITY: `diff` must never include plaintext secret values.
- * Callers are responsible for stripping or masking sensitive fields
- * before passing them here.
- *
- * @param ctx  - Actor context (who performed the action).
- * @param payload - Action, resource reference, and sanitized diff.
+ * Write an audit log entry. Fire-and-forget — the promise is intentionally
+ * NOT awaited so audit writes never block the request or response.
+ * Errors are caught and logged; they never surface to the caller.
  */
-export async function writeAudit(
-  ctx: AuditContext,
-  payload: AuditPayload,
-): Promise<void> {
-  await prisma.auditLog.create({
-    data: {
-      actorId: ctx.actorId,
-      actorEmail: ctx.actorEmail,
-      orgId: ctx.orgId ?? null,
-      action: payload.action,
-      resource: payload.resource,
-      resourceType: payload.resourceType,
-      diff: payload.diff ? JSON.stringify(payload.diff) : "",
-      ipAddress: ctx.ipAddress ?? "",
-      userAgent: ctx.userAgent ?? "",
-    },
-  });
+export function writeAudit(params: AuditParams): void {
+  prisma.auditLog
+    .create({
+      data: {
+        orgId: params.orgId,
+        actorId: params.actorId,
+        actorEmail: params.actorEmail,
+        action: params.action,
+        resource: params.resource,
+        oldValue: params.oldValue ?? null,
+        newValue: params.newValue ?? null,
+        ipAddress: params.ipAddress ?? "unknown",
+        userAgent: params.userAgent ?? "",
+        traceId: params.traceId ?? "",
+      },
+    })
+    .catch((err: unknown) => {
+      console.error("[audit] Failed to write audit log:", err)
+    })
 }

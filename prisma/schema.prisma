@@ -1,35 +1,148 @@
-// Prisma schema v2 — agent.tools.config-manager
-// Full enterprise multi-tenant schema with versioning, audit, secrets, certs, tokens.
+// This is your Prisma schema file
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
-// ---------------------------------------------------------------------------
-// Identity & Access Management
-// ---------------------------------------------------------------------------
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum Environment {
+  DEV
+  STAGING
+  PROD
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  REVEAL
+  LOGIN
+  LOGOUT
+  ROLE_CHANGE
+  KEY_ROTATION
+}
+
+// ─── Org (Tenant boundary) ───────────────────────────────────────────────────
+
+model Org {
+  id        String      @id @default(cuid())
+  name      String
+  slug      String      @unique
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  members   OrgMember[]
+  settings  Setting[]
+  audits    AuditLog[]
+}
+
+model OrgMember {
+  id       String   @id @default(cuid())
+  orgId    String
+  userId   String
+  role     Role     @default(VIEWER)
+  joinedAt DateTime @default(now())
+  org      Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
 
 model User {
-  id           String   @id @default(cuid())
-  name         String?
-  email        String   @unique
-  passwordHash String
-  role         Role     @default(VIEWER)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            String      @id @default(cuid())
+  name          String?
+  email         String      @unique
+  emailVerified DateTime?
+  image         String?
+  role          Role        @default(VIEWER)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  // OAuth accounts (managed by @auth/prisma-adapter)
+  accounts      Account[]
+  sessions      Session[]
+  // Org memberships
+  orgMemberships OrgMember[]
+  audits        AuditLog[]
+}
 
-  // relations
-  memberships  OrgMember[]
-  sessions     Session[]
-  auditLogs    AuditLog[]
-  apiTokens    ApiToken[]
-  revealLogs   SecretRevealLog[]
+// ─── Setting (Config entry) ───────────────────────────────────────────────────
+
+model Setting {
+  id          String      @id @default(cuid())
+  orgId       String
+  service     String
+  key         String
+  valueCipher String      // AES-256-GCM encrypted (always) or plaintext for non-secrets
+  isSecret    Boolean     @default(true)
+  environment Environment @default(PROD)
+  deletedAt   DateTime?   // soft-delete
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  org         Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, service, key, environment])
+  @@index([orgId, service])
+  @@index([orgId, environment])
+  @@index([deletedAt])
+}
+
+// ─── AuditLog ─────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  orgId      String
+  actorId    String
+  actorEmail String      // denormalized to avoid join on reads
+  action     AuditAction
+  resource   String      // e.g. "config:stripe.API_KEY.PROD" or "user:clm123"
+  oldValue   String?     // JSON snapshot (secrets masked)
+  newValue   String?     // JSON snapshot (secrets masked)
+  ipAddress  String      @default("unknown")
+  userAgent  String      @default("")
+  traceId    String      @default("")  // OTel trace ID for correlation
+  createdAt  DateTime    @default(now())
+  org        Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor      User        @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([actorId])
+  @@index([action])
+}
+
+// ─── OAuth / Session (managed by @auth/prisma-adapter) ───────────────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
 }
 
 model Session {
@@ -37,280 +150,28 @@ model Session {
   sessionToken String   @unique
   userId       String
   expires      DateTime
-  elevated     Boolean  @default(false) // re-auth claim for secret reveals
-  elevatedAt   DateTime?
-  createdAt    DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expires])
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-enum Role {
-  SUPERADMIN
-  ADMIN
-  EDITOR
-  VIEWER
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
 }
 
-// ---------------------------------------------------------------------------
-// Organization / Project / Environment hierarchy
-// ---------------------------------------------------------------------------
-
-model Organization {
-  id        String   @id @default(cuid())
-  slug      String   @unique
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  members      OrgMember[]
-  projects     Project[]
-  apiTokens    ApiToken[]
-  auditLogs    AuditLog[]
-}
-
-model OrgMember {
-  id     String  @id @default(cuid())
-  orgId  String
-  userId String
-  role   OrgRole @default(VIEWER)
-
-  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([orgId, userId])
-  @@index([userId])
-}
-
-enum OrgRole {
-  OWNER
-  ADMIN
-  EDITOR
-  VIEWER
-}
-
-model Project {
-  id          String   @id @default(cuid())
-  orgId       String
-  slug        String
-  name        String
-  description String   @default("")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  environments Environment[]
-  configItems  ConfigItem[]
-  secrets      Secret[]
-  certificates Certificate[]
-
-  @@unique([orgId, slug])
-  @@index([orgId])
-}
-
-model Environment {
-  id        String   @id @default(cuid())
-  projectId String
-  slug      String   // e.g. "dev" | "staging" | "production"
-  name      String
-  createdAt DateTime @default(now())
-
-  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  configItems ConfigItem[]
-  secrets     Secret[]
-
-  @@unique([projectId, slug])
-  @@index([projectId])
-}
-
-// ---------------------------------------------------------------------------
-// Config Items (typed key-value store with versioning)
-// ---------------------------------------------------------------------------
-
-model ConfigItem {
-  id          String      @id @default(cuid())
-  projectId   String
-  envId       String
-  key         String
-  valueType   ValueType   @default(STRING)
-  valuePlain  String?     // non-secret value stored in plaintext
-  isSecret    Boolean     @default(false)
-  description String      @default("")
-  tags        String[]    @default([])
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  createdById String?
-
-  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  environment Environment      @relation(fields: [envId], references: [id], onDelete: Cascade)
-  versions    ConfigVersion[]
-
-  @@unique([projectId, envId, key])
-  @@index([projectId, envId])
-  @@index([key])
-}
-
-model ConfigVersion {
-  id           String   @id @default(cuid())
-  configItemId String
-  version      Int
-  valueCipher  String   // always encrypted snapshot (even for non-secrets, for consistency)
-  isSecret     Boolean
-  valueType    ValueType
-  description  String   @default("")
-  tags         String[] @default([])
-  createdAt    DateTime @default(now())
-  createdById  String?
-
-  configItem ConfigItem @relation(fields: [configItemId], references: [id], onDelete: Cascade)
-
-  @@unique([configItemId, version])
-  @@index([configItemId])
-}
-
-enum ValueType {
-  STRING
-  NUMBER
-  BOOLEAN
-  JSON
-  URL
-  SECRET_REF // reference to a Secret by id
-}
-
-// ---------------------------------------------------------------------------
-// Secrets Vault (encrypted at rest, masked in all responses)
-// ---------------------------------------------------------------------------
-
-model Secret {
-  id          String    @id @default(cuid())
-  projectId   String
-  envId       String
-  name        String    // human-readable label
-  key         String    // the variable key (e.g. "STRIPE_SECRET_KEY")
-  valueCipher String    // AES-GCM encrypted blob
-  description String    @default("")
-  tags        String[]  @default([])
-  rotatedAt   DateTime?
-  expiresAt   DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  createdById String?
-
-  project     Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  environment Environment       @relation(fields: [envId], references: [id], onDelete: Cascade)
-  revealLogs  SecretRevealLog[]
-
-  @@unique([projectId, envId, key])
-  @@index([projectId, envId])
-}
-
-/// Immutable audit trail for every secret reveal event.
-model SecretRevealLog {
-  id        String   @id @default(cuid())
-  secretId  String
-  actorId   String
-  ipAddress String   @default("")
-  userAgent String   @default("")
-  createdAt DateTime @default(now())
-
-  secret Secret @relation(fields: [secretId], references: [id], onDelete: Cascade)
-  actor  User   @relation(fields: [actorId], references: [id], onDelete: Cascade)
-
-  @@index([secretId])
-  @@index([actorId])
-}
-
-// ---------------------------------------------------------------------------
-// Certificates (PEM storage + expiry + rotation tracking)
-// ---------------------------------------------------------------------------
-
-model Certificate {
-  id          String    @id @default(cuid())
-  projectId   String
-  name        String
-  domain      String
-  pemCipher   String    // AES-GCM encrypted PEM chain
-  keysCipher  String    // AES-GCM encrypted private key
-  fingerprint String    // SHA-256 fingerprint of public cert (for de-dup)
-  issuer      String    @default("")
-  subject     String    @default("")
-  expiresAt   DateTime
-  issuedAt    DateTime
-  autoRotate  Boolean   @default(false)
-  rotatedAt   DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  createdById String?
-
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@index([projectId])
-  @@index([expiresAt])
-}
-
-// ---------------------------------------------------------------------------
-// API Tokens (scoped, hashed, revokable)
-// ---------------------------------------------------------------------------
-
-model ApiToken {
-  id          String    @id @default(cuid())
-  orgId       String
-  name        String
-  tokenHash   String    @unique // SHA-256 of the raw token; raw is shown once at creation
-  prefix      String    // first 8 chars for UI identification (e.g. "cm_abc12…")
-  scopes      String[]  @default([]) // e.g. ["configs:read", "secrets:read"]
-  expiresAt   DateTime?
-  lastUsedAt  DateTime?
-  revokedAt   DateTime?
-  createdAt   DateTime  @default(now())
-  createdById String?
-
-  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
-
-  @@index([orgId])
-  @@index([tokenHash])
-}
-
-// ---------------------------------------------------------------------------
-// Audit Log (immutable — no UPDATE/DELETE enforced via Prisma middleware)
-// ---------------------------------------------------------------------------
-
-model AuditLog {
-  id           String   @id @default(cuid())
-  orgId        String?
-  actorId      String
-  actorEmail   String   // denormalized snapshot — actor may be deleted
-  action       String   // e.g. "secret.reveal", "config.create", "cert.rotate"
-  resource     String   // e.g. "secret:clxyz123", "config:clxyz456"
-  resourceType String   // e.g. "Secret", "ConfigItem", "Certificate"
-  diff         String   @default("") // JSON diff snapshot (no plaintext secrets)
-  ipAddress    String   @default("")
-  userAgent    String   @default("")
-  createdAt    DateTime @default(now())
-
-  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
-  actor User          @relation(fields: [actorId], references: [id], onDelete: Restrict)
-
-  @@index([orgId, createdAt(sort: Desc)])
-  @@index([actorId])
-  @@index([resource])
-  @@index([action])
-}
-
-// ---------------------------------------------------------------------------
-// Rate Limiting (sliding window, per-key)
-// ---------------------------------------------------------------------------
+// ─── Rate limiting (legacy fallback — primary is Redis) ───────────────────────
 
 model RateLimit {
   id          String   @id @default(cuid())
   key         String
   windowStart DateTime
   count       Int      @default(0)
+  expiresAt   DateTime // allows pruning stale rows
   createdAt   DateTime @default(now())
 
   @@unique([key, windowStart])
   @@index([windowStart])
+  @@index([expiresAt])
 }

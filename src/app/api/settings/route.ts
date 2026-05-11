@@ -1,21 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server"
 
 /**
- * Legacy /api/settings endpoint — redirected to /api/configs in v2.
- *
- * The `setting` model was replaced by `ConfigItem` + `ConfigVersion` in the v2
- * schema migration. All callers should migrate to /api/configs.
+ * @deprecated /api/settings is replaced by /api/configs (EPIC-123).
+ * All methods return 301 Moved Permanently.
  */
-export async function GET(): Promise<NextResponse> {
-  return NextResponse.json(
-    { error: "This endpoint has moved to /api/configs" },
-    { status: 410 },
-  );
+function redirect(req: NextRequest) {
+  const newUrl = req.nextUrl.clone()
+  newUrl.pathname = req.nextUrl.pathname.replace("/api/settings", "/api/configs")
+  return NextResponse.redirect(newUrl, { status: 301 })
 }
 
-export async function POST(): Promise<NextResponse> {
-  return NextResponse.json(
-    { error: "This endpoint has moved to /api/configs" },
-    { status: 410 },
-  );
-}
+export const GET = redirect
+export const POST = redirect
+export const PATCH = redirect
+export const DELETE = redirect
