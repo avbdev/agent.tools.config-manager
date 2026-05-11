@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
-import { orgCanWrite, orgCanDelete, orgCanRevealSecrets, orgCanManageMembers } from "@/lib/rbac";
+import { canCreate, canDelete, canReveal, canManageUsers } from "@/lib/rbac";
 import { forbidden, notFound } from "@/lib/http";
-import type { OrgMember } from "@/generated/prisma";
-import type { SessionUser } from "@/lib/auth";
+import type { OrgMember } from "@prisma/client";
+import type { SessionUser } from "@/lib/middleware/auth-guard";
 import type { NextResponse } from "next/server";
 
 export type OrgAuthenticatedHandler = (
@@ -10,10 +10,6 @@ export type OrgAuthenticatedHandler = (
   user: SessionUser,
   member: OrgMember,
 ) => Promise<NextResponse> | NextResponse;
-
-// ---------------------------------------------------------------------------
-// Internal membership resolver
-// ---------------------------------------------------------------------------
 
 async function resolveMembership(
   orgId: string,
@@ -24,14 +20,6 @@ async function resolveMembership(
   });
 }
 
-// ---------------------------------------------------------------------------
-// RBAC guard factories
-// ---------------------------------------------------------------------------
-
-/**
- * Asserts the user is a member of the given org (any role).
- * Returns 404 if the org is not found to avoid org enumeration.
- */
 export function withOrgMember(
   getOrgId: (req: Request) => string | null,
   handler: OrgAuthenticatedHandler,
@@ -39,17 +27,12 @@ export function withOrgMember(
   return async (req: Request, user: SessionUser): Promise<NextResponse> => {
     const orgId = getOrgId(req);
     if (!orgId) return notFound("Organization not found");
-
     const member = await resolveMembership(orgId, user.id);
     if (!member) return notFound("Organization not found");
-
     return handler(req, user, member);
   };
 }
 
-/**
- * Asserts the user has write permission in the org.
- */
 export function withOrgWrite(
   getOrgId: (req: Request) => string | null,
   handler: OrgAuthenticatedHandler,
@@ -57,21 +40,13 @@ export function withOrgWrite(
   return async (req: Request, user: SessionUser): Promise<NextResponse> => {
     const orgId = getOrgId(req);
     if (!orgId) return notFound("Organization not found");
-
     const member = await resolveMembership(orgId, user.id);
     if (!member) return notFound("Organization not found");
-
-    if (!orgCanWrite(member.role)) {
-      return forbidden("Insufficient permissions to write in this organization");
-    }
-
+    if (!canCreate(member.role)) return forbidden("Insufficient permissions");
     return handler(req, user, member);
   };
 }
 
-/**
- * Asserts the user has delete permission in the org.
- */
 export function withOrgDelete(
   getOrgId: (req: Request) => string | null,
   handler: OrgAuthenticatedHandler,
@@ -79,21 +54,13 @@ export function withOrgDelete(
   return async (req: Request, user: SessionUser): Promise<NextResponse> => {
     const orgId = getOrgId(req);
     if (!orgId) return notFound("Organization not found");
-
     const member = await resolveMembership(orgId, user.id);
     if (!member) return notFound("Organization not found");
-
-    if (!orgCanDelete(member.role)) {
-      return forbidden("Insufficient permissions to delete in this organization");
-    }
-
+    if (!canDelete(member.role)) return forbidden("Insufficient permissions");
     return handler(req, user, member);
   };
 }
 
-/**
- * Asserts the user can reveal secrets AND has an elevated session.
- */
 export function withSecretReveal(
   getOrgId: (req: Request) => string | null,
   handler: OrgAuthenticatedHandler,
@@ -101,25 +68,13 @@ export function withSecretReveal(
   return async (req: Request, user: SessionUser): Promise<NextResponse> => {
     const orgId = getOrgId(req);
     if (!orgId) return notFound("Organization not found");
-
     const member = await resolveMembership(orgId, user.id);
     if (!member) return notFound("Organization not found");
-
-    if (!orgCanRevealSecrets(member.role)) {
-      return forbidden("Insufficient permissions to reveal secrets");
-    }
-
-    if (!user.isElevated) {
-      return forbidden("Re-authentication required to reveal secrets");
-    }
-
+    if (!canReveal(member.role)) return forbidden("Insufficient permissions");
     return handler(req, user, member);
   };
 }
 
-/**
- * Asserts the user can manage organization members.
- */
 export function withOrgAdmin(
   getOrgId: (req: Request) => string | null,
   handler: OrgAuthenticatedHandler,
@@ -127,14 +82,9 @@ export function withOrgAdmin(
   return async (req: Request, user: SessionUser): Promise<NextResponse> => {
     const orgId = getOrgId(req);
     if (!orgId) return notFound("Organization not found");
-
     const member = await resolveMembership(orgId, user.id);
     if (!member) return notFound("Organization not found");
-
-    if (!orgCanManageMembers(member.role)) {
-      return forbidden("Admin role required for this operation");
-    }
-
+    if (!canManageUsers(member.role)) return forbidden("Admin role required");
     return handler(req, user, member);
   };
 }

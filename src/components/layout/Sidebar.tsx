@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Role } from "@/generated/prisma";
+import type { Role } from "@prisma/client";
 
 type NavItem = {
   href: string;

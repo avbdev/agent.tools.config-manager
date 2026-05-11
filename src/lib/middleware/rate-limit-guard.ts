@@ -1,5 +1,4 @@
-import { checkRateLimit } from "@/lib/rate-limit";
-import { tooManyRequests } from "@/lib/http";
+import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/http";
 import type { NextResponse } from "next/server";
 
@@ -27,14 +26,14 @@ type Handler = (req: Request) => Promise<NextResponse>;
 export function withRateLimit(config: RateLimitConfig, handler: Handler): Handler {
   return async (req: Request): Promise<NextResponse> => {
     const ip = getClientIp(req);
-    const result = await checkRateLimit({
-      key: `${config.keyPrefix}:${ip}`,
-      limit: config.limit,
-      windowMs: config.windowMs,
-    });
+    const result = await checkRateLimit(
+      `${config.keyPrefix}:${ip}`,
+      config.limit,
+      config.windowMs,
+    );
 
     if (!result.allowed) {
-      return tooManyRequests(result.retryAfterSeconds);
+      return tooManyRequestsResponse(result.resetAt);
     }
 
     return handler(req);

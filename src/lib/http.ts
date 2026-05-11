@@ -48,6 +48,22 @@ export function badRequest(message = "Invalid request") {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
+export function unauthorized(message = "Unauthorized") {
+  return NextResponse.json({ error: message }, { status: 401 });
+}
+
+export function forbidden(message = "Forbidden") {
+  return NextResponse.json({ error: message }, { status: 403 });
+}
+
+export function notFound(message = "Not found") {
+  return NextResponse.json({ error: message }, { status: 404 });
+}
+
+export function getUserAgent(req: Request): string {
+  return req.headers.get("user-agent") ?? "";
+}
+
 /**
  * @deprecated Use `tooManyRequestsResponse` from `@/lib/rate-limit` instead,
  * which accepts a `Date` and computes Retry-After automatically.
