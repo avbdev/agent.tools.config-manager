@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { prisma } from "@/lib/prisma"
+import { canCreate } from "@/lib/rbac"
+import { ConfigList } from "@/components/ConfigList"
+import { AddConfigForm } from "@/components/AddConfigForm"
 
 export default async function DashboardPage() {
   const session = await auth()
@@ -20,13 +23,14 @@ export default async function DashboardPage() {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
         Configs
       </h1>
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        Signed in as {session.user.email} · Org: {orgMember.org.name} · Role: {orgMember.role}
-      </p>
+
+      {canCreate(orgMember.role) && <AddConfigForm />}
+
+      <ConfigList role={orgMember.role} />
     </div>
   )
 }
